@@ -1,0 +1,4 @@
+/beacon
+/dist/
+*.test
+*.out
