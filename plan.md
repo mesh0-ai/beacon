@@ -1,5 +1,14 @@
 # beacon — per-pod system-health sidecar
 
+> **Status (2026-05-16):** MVP scaffold complete on branch `justin/beacon-mvp`.
+> `config.go`, `collect.go`, `emit.go`, `main.go`, tests + testdata, Dockerfile,
+> and Makefile are all in. `go test ./...` is green; scratch image builds at
+> **2.5 MB** (target ≤ 6 MB); dry-run smoke test from inside the container
+> emits `pod.health` events with valid cgroup v2 + `/proc` readings and shuts
+> down cleanly on SIGTERM. Phases 2-6 of the rollout (real-mesh0 emit, GHCR
+> push via Actions, first consumer wire-up, dashboard, expansion) are still
+> open.
+
 ## Goal
 
 A tiny static-binary sidecar that can be dropped into any Kubernetes pod (or any Linux container) to periodically sample basic system health from cgroup v2 + `/proc` and ship it to mesh0.
@@ -278,8 +287,8 @@ At 8,000 pods cluster-wide on a 30 s interval that's 267 req/s and ~40 GiB of RS
 
 ## Phased rollout
 
-1. **Initial binary** — `BEACON_DRY_RUN=1` mode emitting to stdout. Validate metrics against `docker stats` (see [local-dev.md](local-dev.md)).
-2. **HTTPS emitter** — POST to a dev mesh0 project. Confirm events appear.
+1. **Initial binary** — `BEACON_DRY_RUN=1` mode emitting to stdout. Validate metrics against `docker stats` (see [local-dev.md](local-dev.md)). ✅ **Done** (2026-05-16). Scratch image at 2.5 MB; dry-run emits valid `pod.health` events.
+2. **HTTPS emitter** — POST to a dev mesh0 project. Confirm events appear. *Code path implemented + unit-tested against `httptest`; not yet exercised against a real mesh0 project.*
 3. **Image + CI** — push to `ghcr.io/mesh0-ai/beacon` via GitHub Actions on tag.
 4. **First consumer integration** — wire into one workload in a staging environment behind a feature flag.
 5. **Dashboard in mesh0 UI** — promoted columns for `mem_used_bytes`, `cpu_pct`, `cpu_throttled_usec`. Single "pod health" table view.
