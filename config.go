@@ -33,17 +33,17 @@ var reservedAttrKeys = map[string]struct{}{
 }
 
 type Config struct {
-	APIKey      string
-	Endpoint    string
-	Interval    int
-	PodName     string
-	NodeName    string
-	Namespace   string
-	Deployment  string
-	Container   string
-	Labels      map[string]string
-	DryRun      bool
-	LogLevel    string
+	APIKey     string
+	Endpoint   string
+	Interval   int
+	PodName    string
+	NodeName   string
+	Namespace  string
+	Deployment string
+	Container  string
+	Labels     map[string]string
+	DryRun     bool
+	LogLevel   string
 }
 
 func LoadConfig() (*Config, error) {

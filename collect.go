@@ -23,18 +23,18 @@ const (
 // Sample is the raw set of numbers read from a single tick. -1 means
 // "not available" (file missing, "max" literal, or no baseline yet).
 type Sample struct {
-	UptimeS           int64
-	MemUsedBytes      int64
-	MemLimitBytes     int64
-	MemSwapUsedBytes  int64
-	CPUUsageUsec      int64
-	CPUPct            float64
-	CPUQuotaCores     float64
-	CPUThrottledUsec  int64
-	Load1             float64
-	Load5             float64
-	Load15            float64
-	ProcsRunning      int64
+	UptimeS          int64
+	MemUsedBytes     int64
+	MemLimitBytes    int64
+	MemSwapUsedBytes int64
+	CPUUsageUsec     int64
+	CPUPct           float64
+	CPUQuotaCores    float64
+	CPUThrottledUsec int64
+	Load1            float64
+	Load5            float64
+	Load15           float64
+	ProcsRunning     int64
 }
 
 // Collector holds state between ticks so we can compute deltas (CPU%).
