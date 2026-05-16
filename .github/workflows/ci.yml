@@ -17,3 +17,16 @@ jobs:
       - run: gofmt -l . | (! grep .)
       - run: go vet ./...
       - run: go test -count=1 -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61
+          args: --timeout=5m
