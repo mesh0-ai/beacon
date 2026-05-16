@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// TestEmit_NoFDGrowth is invariant #2 from plan.md. Linux-only because
-// /proc/self/fd doesn't exist on macOS.
+// TestEmit_NoFDGrowth pins the file-descriptor-growth invariant.
+// Linux-only because /proc/self/fd doesn't exist on macOS.
 func TestEmit_NoFDGrowth(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipped in short mode")

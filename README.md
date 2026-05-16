@@ -166,8 +166,6 @@ When `ok` is `false`, `/healthz` returns HTTP **503** so a Kubernetes liveness p
     capabilities: { drop: ["ALL"] }
 ```
 
-A full reference Helm fragment lives in [plan.md](plan.md).
-
 ---
 
 ## Event shape
