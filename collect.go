@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,83 +40,158 @@ type Sample struct {
 	ProcsRunning     int64
 }
 
-// Collector holds state between ticks so we can compute deltas (CPU%).
-type Collector struct {
-	lastCPUUsageUsec int64
-	lastSample       time.Time
-	hasBaseline      bool
-	cgroupV2         bool
+// zeroSample is the all-missing sample. Use this so a new field added
+// later defaults to -1 (missing) instead of 0 (a real reading).
+func zeroSample() Sample {
+	return Sample{
+		UptimeS: -1, MemUsedBytes: -1, MemLimitBytes: -1, MemSwapUsedBytes: -1,
+		CPUUsageUsec: -1, CPUPct: -1, CPUQuotaCores: -1, CPUThrottledUsec: -1,
+		Load1: -1, Load5: -1, Load15: -1, ProcsRunning: -1,
+	}
 }
 
-func NewCollector() *Collector {
+type cpuBaseline struct {
+	usageUsec int64
+	at        time.Time
+}
+
+// Collector holds state between ticks so we can compute deltas (CPU%).
+// Not safe for concurrent Collect calls — beacon calls it from one
+// goroutine.
+type Collector struct {
+	cgroupV2   bool
+	baseline   *cpuBaseline
+	errLog     io.Writer
+	errCount   atomic.Uint64
+	rollbacks  atomic.Uint64
+	loggedMu   sync.Mutex
+	loggedOnce map[string]struct{}
+}
+
+func NewCollector(errLog io.Writer) *Collector {
 	_, err := os.Stat(cgroupV2Marker)
-	c := &Collector{cgroupV2: err == nil}
+	c := &Collector{
+		cgroupV2:   err == nil,
+		errLog:     errLog,
+		loggedOnce: map[string]struct{}{},
+	}
 	if !c.cgroupV2 {
-		fmt.Fprintln(os.Stderr, "warn: cgroup v2 not detected; cgroup metrics will be -1")
+		fmt.Fprintln(errLog, "warn: cgroup v2 not detected; cgroup metrics will be -1")
 	}
 	return c
 }
 
-// Collect reads all sources and returns a Sample. Errors on individual
-// files are swallowed and surfaced as -1 fields so a single missing
-// file doesn't take down the tick.
-func (c *Collector) Collect(now time.Time) Sample {
-	s := Sample{
-		MemUsedBytes:     -1,
-		MemLimitBytes:    -1,
-		MemSwapUsedBytes: -1,
-		CPUUsageUsec:     -1,
-		CPUPct:           -1,
-		CPUQuotaCores:    -1,
-		CPUThrottledUsec: -1,
-		UptimeS:          -1,
-		Load1:            -1,
-		Load5:            -1,
-		Load15:           -1,
-		ProcsRunning:     -1,
+// ErrorCount is the running total of per-field collection errors. Read by
+// /healthz so a misconfigured mount (permission errors, missing files)
+// becomes visible without grepping logs.
+func (c *Collector) ErrorCount() uint64 { return c.errCount.Load() }
+
+// CounterRollbacks counts the times cpu_usage_usec went backwards
+// (cgroup re-created, container reset). One-off; persistent growth is
+// the signal.
+func (c *Collector) CounterRollbacks() uint64 { return c.rollbacks.Load() }
+
+// CgroupV2 reports whether cgroup v2 was detected at startup.
+func (c *Collector) CgroupV2() bool { return c.cgroupV2 }
+
+// logFirst records the error, increments the counter, and logs once per
+// (source, error-class) so a permanently-broken /sys mount doesn't flood
+// stderr every tick.
+func (c *Collector) logFirst(source string, err error) {
+	c.errCount.Add(1)
+	key := source + "|" + classifyErr(err)
+	c.loggedMu.Lock()
+	_, seen := c.loggedOnce[key]
+	if !seen {
+		c.loggedOnce[key] = struct{}{}
 	}
+	c.loggedMu.Unlock()
+	if !seen {
+		fmt.Fprintf(c.errLog, "warn: collect %s: %v (further occurrences suppressed)\n", source, err)
+	}
+}
+
+func classifyErr(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	if os.IsNotExist(err) {
+		return "missing"
+	}
+	if os.IsPermission(err) {
+		return "perm"
+	}
+	return "other"
+}
+
+// Collect reads all sources and returns a Sample. Per-file errors are
+// recorded in counters + first-time logged; the tick always produces a
+// Sample so a single broken file doesn't take down telemetry.
+func (c *Collector) Collect(now time.Time) Sample {
+	s := zeroSample()
 
 	if c.cgroupV2 {
-		if v, err := readInt64File(memCurrentPath); err == nil {
-			s.MemUsedBytes = v
-		}
-		if b, err := os.ReadFile(memMaxPath); err == nil {
+		c.readInt64(memCurrentPath, &s.MemUsedBytes)
+		c.readParse(memMaxPath, func(b []byte) {
 			s.MemLimitBytes = parseMemoryMax(string(b))
-		}
-		if v, err := readInt64File(memSwapPath); err == nil {
-			s.MemSwapUsedBytes = v
-		}
-		if b, err := os.ReadFile(cpuStatPath); err == nil {
-			usage, throttled := parseCPUStat(string(b))
-			s.CPUUsageUsec = usage
-			s.CPUThrottledUsec = throttled
-		}
-		if b, err := os.ReadFile(cpuMaxPath); err == nil {
+		})
+		c.readInt64(memSwapPath, &s.MemSwapUsedBytes)
+		c.readParse(cpuStatPath, func(b []byte) {
+			s.CPUUsageUsec, s.CPUThrottledUsec = parseCPUStat(string(b))
+		})
+		c.readParse(cpuMaxPath, func(b []byte) {
 			s.CPUQuotaCores = parseCPUMax(string(b))
-		}
+		})
 	}
 
-	if b, err := os.ReadFile(procUptimePath); err == nil {
-		s.UptimeS = parseUptime(string(b))
-	}
-	if b, err := os.ReadFile(procLoadavgPath); err == nil {
-		l1, l5, l15, running := parseLoadavg(string(b))
-		s.Load1, s.Load5, s.Load15, s.ProcsRunning = l1, l5, l15, running
-	}
+	c.readParse(procUptimePath, func(b []byte) { s.UptimeS = parseUptime(string(b)) })
+	c.readParse(procLoadavgPath, func(b []byte) {
+		s.Load1, s.Load5, s.Load15, s.ProcsRunning = parseLoadavg(string(b))
+	})
 
-	if c.hasBaseline && s.CPUUsageUsec >= 0 {
-		deltaCPU := s.CPUUsageUsec - c.lastCPUUsageUsec
-		deltaWall := now.Sub(c.lastSample).Microseconds()
-		if deltaWall > 0 && deltaCPU >= 0 {
-			s.CPUPct = float64(deltaCPU) / float64(deltaWall) * 100.0
-		}
-	}
+	s.CPUPct = c.cpuPercent(s.CPUUsageUsec, now)
 	if s.CPUUsageUsec >= 0 {
-		c.lastCPUUsageUsec = s.CPUUsageUsec
-		c.lastSample = now
-		c.hasBaseline = true
+		c.baseline = &cpuBaseline{usageUsec: s.CPUUsageUsec, at: now}
 	}
 	return s
+}
+
+// cpuPercent returns the cpu% over [baseline, now). Returns -1 when:
+// no baseline yet, deltaWall == 0 (same tick), or counter regression
+// (cgroup re-created mid-process; counted via rollbacks).
+func (c *Collector) cpuPercent(usage int64, now time.Time) float64 {
+	if c.baseline == nil || usage < 0 {
+		return -1
+	}
+	deltaCPU := usage - c.baseline.usageUsec
+	deltaWall := now.Sub(c.baseline.at).Microseconds()
+	if deltaWall <= 0 {
+		return -1
+	}
+	if deltaCPU < 0 {
+		c.rollbacks.Add(1)
+		c.logFirst("cpu.stat:rollback", fmt.Errorf("usage_usec decreased %d -> %d", c.baseline.usageUsec, usage))
+		return -1
+	}
+	return float64(deltaCPU) / float64(deltaWall) * 100.0
+}
+
+func (c *Collector) readInt64(path string, dst *int64) {
+	v, err := readInt64File(path)
+	if err != nil {
+		c.logFirst(path, err)
+		return
+	}
+	*dst = v
+}
+
+func (c *Collector) readParse(path string, parse func([]byte)) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		c.logFirst(path, err)
+		return
+	}
+	parse(b)
 }
 
 func readInt64File(path string) (int64, error) {
@@ -121,7 +199,11 @@ func readInt64File(path string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return n, nil
 }
 
 // parseMemoryMax reads cgroup v2 memory.max. Literal "max" → -1.
@@ -161,7 +243,7 @@ func parseCPUStat(s string) (int64, int64) {
 }
 
 // parseCPUMax reads cgroup v2 cpu.max ("quota period" or "max period").
-// Returns quota/period as cores, or -1 for "max".
+// Returns quota/period as cores, or -1 for "max" / parse failure.
 func parseCPUMax(s string) float64 {
 	parts := strings.Fields(strings.TrimSpace(s))
 	if len(parts) != 2 {
@@ -172,7 +254,7 @@ func parseCPUMax(s string) float64 {
 	}
 	quota, err1 := strconv.ParseFloat(parts[0], 64)
 	period, err2 := strconv.ParseFloat(parts[1], 64)
-	if err1 != nil || err2 != nil || period == 0 {
+	if err1 != nil || err2 != nil || period == 0 || quota < 0 {
 		return -1
 	}
 	return quota / period
