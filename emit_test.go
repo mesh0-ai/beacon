@@ -305,7 +305,7 @@ func TestEmit_NetworkErrorIsTransient(t *testing.T) {
 	}
 }
 
-// TestEmit_NoGoroutineGrowth is invariant #1 from plan.md.
+// TestEmit_NoGoroutineGrowth pins the goroutine-growth invariant.
 func TestEmit_NoGoroutineGrowth(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipped in short mode")

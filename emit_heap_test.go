@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// TestEmit_NoHeapGrowth is invariant #3 from plan.md. Uses absolute
+// TestEmit_NoHeapGrowth pins the heap-growth invariant. Uses absolute
 // slack rather than multiplicative: a 2x baseline grows the allowed
 // drift with the noise floor, which is the opposite of what we want.
 func TestEmit_NoHeapGrowth(t *testing.T) {
